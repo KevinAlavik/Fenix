@@ -1,0 +1,9 @@
+src_files=("src/*.c")
+
+compiler="gcc"
+
+cflags="-Wall -Werror"
+lflags=""
+
+build_dir="obj"
+bin_dir="bin"

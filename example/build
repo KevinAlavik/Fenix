@@ -1,0 +1,10 @@
+#!/bin/bash
+
+project_kind="C-Simple"
+
+targets=("build")
+default_target="build"
+
+function build_pre {
+    echo "Bulding app..."
+}
