@@ -1,5 +1,27 @@
 #!/bin/bash
 
+# MIT License
+
+# Copyright (c) 2024 Kevin Alavik
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -9,15 +31,18 @@ CYAN='\033[0;36m'
 WHITE='\033[0;37m'
 NC='\033[0m'
 
-ERROR=1
-WARN=2
-INFO=3
-DEBUG=4
-TRACE=5
+OK=1
+ERROR=2
+WARN=3
+INFO=4
+DEBUG=5
+TRACE=6
 
-LOG_LEVEL=$TRACE
+LOG_LEVEL=$WARN
 
-log() {
+CACHE_FILE=".fenix-cache"
+
+function log {
     local level="$1"
     shift
     local message="$@"
@@ -30,6 +55,7 @@ log() {
             $INFO)  color=$BLUE; prefix="ℹ️  INFO:" ;;
             $DEBUG) color=$MAGENTA; prefix="🔍 DEBUG:" ;;
             $TRACE) color=$CYAN; prefix="🔎 TRACE:" ;;
+            $OK)    color=$GREEN; prefix="✅ OK:" ;;
             *)      color=$NC; prefix="LOG:" ;;
         esac
         while IFS= read -r line; do
@@ -41,7 +67,7 @@ log() {
 function usage {
     log $INFO "Usage: $0 <dir> [<target>]"
     log $INFO "    <dir>      Directory containing the 'build' recipe (required)"
-    log $INFO "    <target>   Target to build (optional)"
+    log $INFO "    <target>   Target to build or 'clean' to remove build artifacts (optional)"
 }
 
 function load_build_script {
@@ -92,6 +118,10 @@ function check_default_target {
         fi
     done
 
+    if [[ "$default_target" == "clean" ]]; then
+        found=1
+    fi
+
     if [[ $found -eq 0 ]]; then
         log $ERROR "Target \"$default_target\" not found."
         exit 1
@@ -121,7 +151,7 @@ function check_function {
     local func_name="$1"
 
     if ! declare -f "$func_name" > /dev/null; then
-        log $WARN "Warning: Function '$func_name' does not exist."
+        log $WARN "Function '$func_name' does not exist."
     fi
 }
 
@@ -131,6 +161,7 @@ function spawn_command {
     local args=("$@")
     
     log $TRACE "Spawning command: $command ${args[@]}"
+    echo "+ $command ${args[@]}" 
     "$command" "${args[@]}" &
     local pid=$!
     wait $pid
@@ -149,6 +180,7 @@ function spawn_commands_parallel {
     
     for cmd in "${commands[@]}"; do
         log $TRACE "Spawning command: $cmd"
+        echo "+ $cmd"
         eval "$cmd" &
         pids+=($!)
     done
@@ -174,20 +206,121 @@ function expand_wildcards {
     echo "${result[@]}"
 }
 
+function check_exec {
+    local exec="$1"
+
+    if ! command -v "$exec" > /dev/null; then
+        log $ERROR "Command '$exec' not found."
+        exit 1
+    fi
+}
+
+function update_cache {
+    log $TRACE "Updating cache"
+    > "$CACHE_FILE"
+    for src_file in "${src_files_decoded[@]}"; do
+        local file_hash=$(sha256sum "$src_file" | awk '{ print $1 }')
+        echo "$src_file $file_hash" >> "$CACHE_FILE"
+    done
+}
+
+function cache_is_valid {
+    local valid=1
+    
+    if [[ -f "$CACHE_FILE" ]]; then
+        declare -A cache_file_data
+        
+        while IFS= read -r line; do
+            local file hash
+            read -r file hash <<< "$line"
+            cache_file_data["$file"]="$hash"
+        done < "$CACHE_FILE"
+        
+        for src_file in "${src_files_decoded[@]}"; do
+            if [[ ! -f "$src_file" ]]; then
+                log $WARN "Cached source file '$src_file' is missing."
+                valid=0
+                break
+            fi
+            local current_hash
+            current_hash=$(sha256sum "$src_file" | awk '{ print $1 }')
+            if [[ "${cache_file_data[$src_file]}" != "$current_hash" ]]; then
+                log $WARN "Source file '$src_file' has changed."
+                valid=0
+                break
+            fi
+        done
+    else
+        log $WARN "Cache file '$CACHE_FILE' does not exist. Creating new cache."
+        valid=0
+    fi
+    
+    if [[ $valid -eq 0 ]]; then
+        update_cache
+    fi
+    
+    return $valid
+}
+
+
+function clean {
+    log $INFO "Cleaning build artifacts."
+
+    clean_targets=$(get_value clean)
+    log $TRACE "Clean targets: ${clean_targets[@]}"
+    
+    for target_file in "${clean_targets[@]}"; do
+        log $TRACE "Loading target \"$target_file.target\""
+        if [[ -f "$target_file.target" ]]; then
+            source "$target_file.target"
+        else
+            log $ERROR "Clean script $target_file not found or not executable."
+            exit 1
+        fi
+    done
+
+    if [[ -d "$build_dir" ]]; then
+        log $INFO "Removing build directory $build_dir"
+        rm -rf "$build_dir"
+    else
+        log $WARN "Build directory $build_dir does not exist."
+    fi
+
+    if [[ -d "$bin_dir" ]]; then
+        log $INFO "Removing output directory $bin_dir"
+        rm -rf "$bin_dir"
+    else
+        log $WARN "Output directory $bin_dir does not exist."
+    fi
+
+    if [[ -f "$CACHE_FILE" ]]; then
+        log $INFO "Removing cache file $CACHE_FILE"
+        rm "$CACHE_FILE"
+    fi
+
+    log $OK "Clean operation completed successfully."
+}
+
 function build_c_simple {
+    if [[ $cleaning == 1 ]]; then
+        log $DEBUG "Cleaning targets"
+        clean
+        exit 0
+    fi
+
     check_value src_files
 
     src_files_decoded=()
 
     for pattern in "${src_files[@]}"; do
-        if [[ "$pattern" == **/* ]]; then
+        if [[ "$pattern" == *\** ]]; then
             files=($(expand_wildcards "$pattern"))
         else
             files=($(eval echo "$pattern"))
         fi
 
         if [[ ${#files[@]} -eq 0 ]]; then
-            log $WARN "Warning: No files matched the pattern '$pattern'."
+            log $WARN "No files matched the pattern '$pattern'."
         else
             src_files_decoded+=("${files[@]}")
         fi
@@ -195,19 +328,28 @@ function build_c_simple {
 
     log $TRACE "Source files: ${src_files_decoded[@]}"
 
+    update_cache
+
+    if cache_is_valid; then
+        log $INFO "Cache is valid. Skipping build."
+        exit 0
+    fi
+
     cc=$(get_value compiler)
-    [[ "$cc" == "@null" ]] && cc="cc"
+    [[ "$cc" == "@null" ]] && cc="gcc"
+    check_exec "$cc"
     log $DEBUG "Using compiler: $cc"
 
     ld=$(get_value linker)
-    [[ "$ld" == "@null" ]] && ld="$cc"  # Use compiler as linker if no linker is provided
+    [[ "$ld" == "@null" || -z "$ld" ]] && ld="$cc"
+    check_exec "$ld"
     log $DEBUG "Using linker: $ld"
 
     ccflags=$(get_value cflags)
     ldflags=$(get_value lflags)
 
     obj_dir=$(get_value build_dir)
-    [[ "$obj_dir" == "@null" ]] && obj_dir="build"
+    [[ "$obj_dir" == "@null" ]] && obj_dir="obj"
     mkdir -p "$obj_dir"
     log $DEBUG "Using build directory: $obj_dir"
 
@@ -217,29 +359,46 @@ function build_c_simple {
     log $DEBUG "Using bin directory: $out_dir"
 
     object_files=()
+    compile_commands=()
     for src_file in "${src_files_decoded[@]}"; do
         base_name=$(basename "$src_file")
         obj_file="$obj_dir/${base_name%.*}.o"
-        compile_command="$cc $ccflags -c $src_file -o $obj_file"
-        log $TRACE "Compiling $src_file to $obj_file"
-        spawn_command "$cc" $ccflags -c "$src_file" -o "$obj_file"
-        if [[ $? -ne 0 ]]; then
-            log $ERROR "Compilation of $src_file failed."
-            exit 1
+
+        if [[ ! -f "$obj_file" || "$src_file" -nt "$obj_file" ]]; then
+            compile_command="$cc $ccflags -c $src_file -o $obj_file"
+            compile_commands+=("$compile_command")
+            object_files+=("$obj_file")
+            log $TRACE "Object file $obj_file needs to be rebuilt."
+        else
+            log $TRACE "Object file $obj_file is up-to-date."
         fi
-        object_files+=("$obj_file")
     done
 
+    if [[ ${#compile_commands[@]} -gt 0 ]]; then
+        log $TRACE "Compiling object files in parallel"
+        spawn_commands_parallel "${compile_commands[@]}"
+    else
+        log $INFO "No source files need recompilation."
+    fi
+
+    object_files=($(find "$obj_dir" -name '*.o'))
+
+    if [[ ${#object_files[@]} -eq 0 ]]; then
+        log $ERROR "No object files found in $obj_dir."
+        exit 1
+    fi
+
     output_file="$out_dir/$(basename "${src_files_decoded[0]}" .c)"
-    link_command="$ld $ldflags -o $output_file ${object_files[@]}"
+    link_command="$ld $ldflags -o \"$output_file\" ${object_files[@]}"
     log $TRACE "Linking object files into $output_file"
     spawn_command "$ld" $ldflags -o "$output_file" "${object_files[@]}"
+    
     if [[ $? -ne 0 ]]; then
         log $ERROR "Linking failed."
         exit 1
     fi
 
-    log $INFO "Build successful. Executable is located at $output_file"
+    log $OK "Build successful. Executable is located at $(pwd)/$output_file"
 }
 
 function build {
@@ -278,6 +437,10 @@ function pre_build {
 
     check_default_target
 
+    if [[ "$default_target" == "clean" ]]; then
+        cleaning=true
+    fi
+
     log $DEBUG "Project Kind: $project_kind"
     log $DEBUG "Targets: ${targets[@]}"
     log $DEBUG "Default Target: $default_target"
@@ -311,10 +474,15 @@ dir=$1
 target=${2:-}
 project_type=''
 
+cleaning=false
+
 if [[ -d "$dir" ]]; then
     log $INFO "Loading build script from directory $dir"
     load_build_script "$dir"
-    if [[ -n "$target" ]]; then
+    if [[ "$target" == "clean" ]]; then
+        default_target="clean"
+        cleaning=true
+    elif [[ -n "$target" ]]; then
         default_target=$target
         log $INFO "Using specified target: $default_target"
     fi

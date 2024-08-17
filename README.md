@@ -1,9 +1,14 @@
 # Fenix
 
-A simple bash based build system.
+*Todo: More in depth documentation*
+
+A simple, single file bash based build system
+
 
 ## Usage
 
-*Todo: Finish writing this*
+who do yall think i am? im to lazy to write docs. Just look at `fenix.sh` and the example in `example/` (you are a programer, arent you?)
 
-First you need to create a simple `build` file in the root of your project.
+## License
+
+Fenix is licensed under the MIT license, see [LICENSE](https://github.com/KevinAlavik/Fenix/tree/main/LICENSE)
