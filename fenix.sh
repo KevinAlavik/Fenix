@@ -199,9 +199,11 @@ function expand_wildcards {
     local pattern="$1"
     local result=()
 
+    local abs_pattern="$dir/$pattern"
+
     while IFS= read -r file; do
-        result+=("$file")
-    done < <(find . -type f -name "$(basename "$pattern")")
+        result+=("${file#$dir/}")
+    done < <(find "$dir" -type f -name "$(basename "$abs_pattern")" -path "$abs_pattern")
 
     echo "${result[@]}"
 }
@@ -350,19 +352,26 @@ function build_c_simple {
 
     obj_dir=$(get_value build_dir)
     [[ "$obj_dir" == "@null" ]] && obj_dir="obj"
-    mkdir -p "$obj_dir"
-    log $DEBUG "Using build directory: $obj_dir"
+    
+    target_name=${default_target:-"out"}
+    target_obj_dir="$obj_dir/$target_name"
+    mkdir -p "$target_obj_dir"
+    log $DEBUG "Using target-specific build directory: $target_obj_dir"
 
     out_dir=$(get_value bin_dir)
     [[ "$out_dir" == "@null" ]] && out_dir="bin"
     mkdir -p "$out_dir"
     log $DEBUG "Using bin directory: $out_dir"
 
+    exe_out=$(get_value out)
+    [[ "$exe_out" == "@null" ]] && exe_out="main"
+    log $DEBUG "Using exec name: $exe_out"
+
     object_files=()
     compile_commands=()
     for src_file in "${src_files_decoded[@]}"; do
         base_name=$(basename "$src_file")
-        obj_file="$obj_dir/${base_name%.*}.o"
+        obj_file="$target_obj_dir/${base_name%.*}.o"
 
         if [[ ! -f "$obj_file" || "$src_file" -nt "$obj_file" ]]; then
             compile_command="$cc $ccflags -c $src_file -o $obj_file"
@@ -381,17 +390,17 @@ function build_c_simple {
         log $INFO "No source files need recompilation."
     fi
 
-    object_files=($(find "$obj_dir" -name '*.o'))
+    object_files=($(find "$target_obj_dir" -name '*.o'))
 
     if [[ ${#object_files[@]} -eq 0 ]]; then
-        log $ERROR "No object files found in $obj_dir."
+        log $ERROR "No object files found in $target_obj_dir."
         exit 1
     fi
 
-    output_file="$out_dir/$(basename "${src_files_decoded[0]}" .c)"
-    link_command="$ld $ldflags -o \"$output_file\" ${object_files[@]}"
+    output_file="$out_dir/$exe_out"
+    link_command="$ld $ldflags -o $output_file ${object_files[@]}"
     log $TRACE "Linking object files into $output_file"
-    spawn_command "$ld" $ldflags -o "$output_file" "${object_files[@]}"
+    spawn_command $link_command
     
     if [[ $? -ne 0 ]]; then
         log $ERROR "Linking failed."
@@ -400,6 +409,7 @@ function build_c_simple {
 
     log $OK "Build successful. Executable is located at $(pwd)/$output_file"
 }
+
 
 function build {
     log $TRACE "Checking for target file $default_target.target"
