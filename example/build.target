@@ -1,5 +1,7 @@
 src_files=("src/*.c")
 
+out="main"
+
 compiler="gcc"
 
 cflags="-Wall -Werror"
